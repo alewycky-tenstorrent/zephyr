@@ -32,8 +32,6 @@ LOG_MODULE_REGISTER(i2c_ll_stm32_v2);
 #include "i2c_ll_stm32.h"
 #include "i2c-priv.h"
 
-#define I2C_STM32_TRANSFER_TIMEOUT_MSEC  500
-
 #ifdef CONFIG_I2C_STM32_V2_TIMING
 /* Use the algorithm to calcuate the I2C timing */
 #ifndef I2C_STM32_VALID_TIMING_NBR
@@ -687,8 +685,7 @@ static int i2c_stm32_msg_write(const struct device *dev, struct i2c_msg *msg,
 	i2c_stm32_enable_transfer_interrupts(dev);
 	LL_I2C_EnableIT_TX(i2c);
 
-	bool is_timeout = (k_sem_take(&data->device_sync_sem,
-				      K_MSEC(I2C_STM32_TRANSFER_TIMEOUT_MSEC)) != 0);
+	bool is_timeout = (k_sem_take(&data->device_sync_sem, cfg->transfer_timeout) != 0);
 
 	if (is_timeout || data->cancelled) {
 		i2c_stm32_master_mode_end(dev);
@@ -750,8 +747,7 @@ static int i2c_stm32_msg_read(const struct device *dev, struct i2c_msg *msg,
 	i2c_stm32_enable_transfer_interrupts(dev);
 	LL_I2C_EnableIT_RX(i2c);
 
-	bool is_timeout = (k_sem_take(&data->device_sync_sem,
-				      K_MSEC(I2C_STM32_TRANSFER_TIMEOUT_MSEC)) != 0);
+	bool is_timeout = (k_sem_take(&data->device_sync_sem, cfg->transfer_timeout) != 0);
 
 	if (is_timeout || data->cancelled) {
 		i2c_stm32_master_mode_end(dev);
@@ -845,7 +841,7 @@ static inline int msg_done(const struct device *dev,
 	const struct i2c_stm32_config *cfg = dev->config;
 	struct i2c_stm32_data *data = dev->data;
 	I2C_TypeDef *i2c = cfg->i2c;
-	int64_t start_time = k_uptime_get();
+	k_timepoint_t end_time = sys_timepoint_calc(cfg->transfer_timeout);
 
 	/* Wait for transfer to complete */
 	while (!LL_I2C_IsActiveFlag_TC(i2c) && !LL_I2C_IsActiveFlag_TCR(i2c)) {
@@ -856,8 +852,7 @@ static inline int msg_done(const struct device *dev,
 			/* proceed to issue stop */
 			break;
 		}
-		if ((k_uptime_get() - start_time) >
-		    I2C_STM32_TRANSFER_TIMEOUT_MSEC) {
+		if (sys_timepoint_expired(end_time)) {
 			return -ETIMEDOUT;
 		}
 	}
@@ -866,8 +861,7 @@ static inline int msg_done(const struct device *dev,
 		LL_I2C_GenerateStopCondition(i2c);
 		while (!LL_I2C_IsActiveFlag_STOP(i2c)
 		       && !data->cancelled) {
-			if ((k_uptime_get() - start_time) >
-			    I2C_STM32_TRANSFER_TIMEOUT_MSEC) {
+			if (sys_timepoint_expired(end_time)) {
 				return -ETIMEDOUT;
 			}
 		}
@@ -887,7 +881,7 @@ static int i2c_stm32_msg_write(const struct device *dev, struct i2c_msg *msg,
 	I2C_TypeDef *i2c = cfg->i2c;
 	unsigned int len = 0U;
 	uint8_t *buf = msg->buf;
-	int64_t start_time = k_uptime_get();
+	k_timepoint_t end_time = sys_timepoint_calc(cfg->transfer_timeout);
 
 	msg_init(dev, msg, next_msg_flags, slave, LL_I2C_REQUEST_WRITE);
 
@@ -902,8 +896,7 @@ static int i2c_stm32_msg_write(const struct device *dev, struct i2c_msg *msg,
 				return -EIO;
 			}
 
-			if ((k_uptime_get() - start_time) >
-			    I2C_STM32_TRANSFER_TIMEOUT_MSEC) {
+			if (sys_timepoint_expired(end_time)) {
 				return -ETIMEDOUT;
 			}
 		}
@@ -924,7 +917,7 @@ static int i2c_stm32_msg_read(const struct device *dev, struct i2c_msg *msg,
 	I2C_TypeDef *i2c = cfg->i2c;
 	unsigned int len = 0U;
 	uint8_t *buf = msg->buf;
-	int64_t start_time = k_uptime_get();
+	k_timepoint_t end_time = sys_timepoint_calc(cfg->transfer_timeout);
 
 	msg_init(dev, msg, next_msg_flags, slave, LL_I2C_REQUEST_READ);
 
@@ -934,8 +927,7 @@ static int i2c_stm32_msg_read(const struct device *dev, struct i2c_msg *msg,
 			if (check_errors(dev, __func__)) {
 				return -EIO;
 			}
-			if ((k_uptime_get() - start_time) >
-			    I2C_STM32_TRANSFER_TIMEOUT_MSEC) {
+			if (sys_timepoint_expired(end_time)) {
 				return -ETIMEDOUT;
 			}
 		}
