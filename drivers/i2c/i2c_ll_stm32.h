@@ -71,6 +71,7 @@ struct i2c_stm32_config {
 	struct stream tx_dma;
 	struct stream rx_dma;
 #endif /* CONFIG_I2C_STM32_V2_DMA */
+	k_timeout_t transfer_timeout;
 };
 
 struct i2c_stm32_data {
@@ -126,6 +127,7 @@ struct i2c_stm32_data {
 	struct dma_config dma_rx_cfg;
 	struct dma_block_config dma_blk_cfg;
 #endif /* CONFIG_I2C_STM32_V2_DMA */
+	bool cancelled;
 #endif /* CONFIG_I2C_RTIO */
 
 #ifdef CONFIG_I2C_TARGET
