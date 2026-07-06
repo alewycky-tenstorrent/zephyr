@@ -119,13 +119,40 @@ void z_arc_firq_stack_set(void)
  *   [core 0 private external interrupts]               [core 1 private external interrupts]
  *
  *
+ * Multi-core (SMP) case with core-private external interrupts (CONFIG_ARC_CONNECT_IDU=n):
+ *
+ *   --------------------------               --------------------------
+ *   |  CPU core 0            |               |  CPU core 1            |
+ *   --------------------------               --------------------------
+ *   |  core 0 (private)      |               |  core 1 (private)      |
+ *   |  interrupt controller  |               |  interrupt controller  |
+ *   --------------------------               --------------------------
+ *          |         |                              |         |
+ *          |  [core 0 private internal interrupts]  |  [core 1 private internal interrupts]
+ *          |                                        |
+ *          +----------------------------------------+
+ *                               |
+ *                      [external interrupts]
+ *                          (replicated)
+ *
+ *  Each external (peripheral) interrupt line is wired to every core's private
+ *  interrupt controller, and an IDU (if present in hardware) is disabled and fully
+ *  masked at boot. All external interrupt lines are kept disabled on every core and
+ *  are enabled on demand with irq_enable(), which programs only the calling core's
+ *  private interrupt controller. As all device initialization runs on the primary
+ *  core before the secondary cores are started, every external interrupt is serviced
+ *  exclusively by the primary core. Consequently, at runtime irq_enable() /
+ *  irq_disable() of external interrupt lines must be called on the primary core
+ *  (pin the calling thread with k_thread_cpu_pin() or proxy the call to CPU 0).
+ *
  *
  *  The interrupts are grouped in HW in the same order - firstly internal interrupts
  *  (with lowest line numbers in IVT), than common interrupts (if present), than external
  *  interrupts (with highest line numbers in IVT).
  *
- *  NOTE: in case of SMP system we currently support in Zephyr only private internal and common
- *  interrupts, so the core-private external interrupts are currently not supported for SMP.
+ *  NOTE: in case of SMP system we support in Zephyr either private internal and common
+ *  interrupts (CONFIG_ARC_CONNECT_IDU=y), or private internal and core-private external
+ *  interrupts serviced by the primary core only (CONFIG_ARC_CONNECT_IDU=n).
  */
 
 /**
@@ -153,7 +180,22 @@ void arch_irq_disable(unsigned int irq);
  */
 int arch_irq_is_enabled(unsigned int irq);
 
-#ifdef CONFIG_ARC_CONNECT
+#if defined(CONFIG_SMP) && defined(CONFIG_ARC_CONNECT) && !defined(CONFIG_ARC_CONNECT_IDU)
+/*
+ * External (peripheral) interrupt lines are replicated to every core's private
+ * interrupt controller and are serviced exclusively by the primary core, so the
+ * per-core registers programmed below must be the primary core's ones.
+ */
+#define ARC_IRQ_ASSERT_CPU0(irq) \
+	__ASSERT((irq) < ARC_CONNECT_IDU_IRQ_START || \
+		 z_arc_v2_core_id() == ARC_MP_PRIMARY_CPU_ID, \
+		 "external interrupt %u control attempted on CPU %u (must be CPU %u)", \
+		 (irq), z_arc_v2_core_id(), ARC_MP_PRIMARY_CPU_ID)
+#else
+#define ARC_IRQ_ASSERT_CPU0(irq)
+#endif
+
+#ifdef CONFIG_ARC_CONNECT_IDU
 
 #define IRQ_NUM_TO_IDU_NUM(id)		((id) - ARC_CONNECT_IDU_IRQ_START)
 #define IRQ_IS_COMMON(id)		((id) >= ARC_CONNECT_IDU_IRQ_START)
@@ -187,19 +229,26 @@ int arch_irq_is_enabled(unsigned int irq)
 #else
 void arch_irq_enable(unsigned int irq)
 {
+	ARC_IRQ_ASSERT_CPU0(irq);
 	z_arc_v2_irq_unit_int_enable(irq);
 }
 
 void arch_irq_disable(unsigned int irq)
 {
+	ARC_IRQ_ASSERT_CPU0(irq);
 	z_arc_v2_irq_unit_int_disable(irq);
 }
 
 int arch_irq_is_enabled(unsigned int irq)
 {
+	/*
+	 * This reads the calling core's private interrupt controller. With
+	 * CONFIG_ARC_CONNECT_IDU=n in SMP, external interrupt lines are only
+	 * ever enabled on the primary core, so CPU 0's view is the system view.
+	 */
 	return z_arc_v2_irq_unit_int_enabled(irq);
 }
-#endif /* CONFIG_ARC_CONNECT */
+#endif /* CONFIG_ARC_CONNECT_IDU */
 
 /**
  * @internal
@@ -217,6 +266,11 @@ void z_irq_priority_set(unsigned int irq, unsigned int prio, uint32_t flags)
 {
 	ARG_UNUSED(flags);
 
+	/*
+	 * NOTE: this writes the calling core's private interrupt controller. No
+	 * primary-core assertion here (unlike arch_irq_enable/disable): irq_offload
+	 * legitimately connects its core-private line (>= 24) on every core.
+	 */
 	__ASSERT(prio < CONFIG_NUM_IRQ_PRIO_LEVELS,
 		 "invalid priority %d for irq %d", prio, irq);
 /* 0 -> CONFIG_NUM_IRQ_PRIO_LEVELS allocated to secure world
