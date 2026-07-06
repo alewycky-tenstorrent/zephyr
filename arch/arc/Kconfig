@@ -222,6 +222,28 @@ config ARC_CONNECT
 	  ARC is configured with ARC CONNECT which is a hardware for connecting
 	  multi cores.
 
+config ARC_CONNECT_IDU
+	bool "Route common (shared) interrupts through the ARConnect IDU"
+	depends on ARC_CONNECT
+	default y
+	help
+	  Use the ARConnect Interrupt Distribution Unit (IDU) to manage the
+	  common (shared) peripheral interrupts, i.e. interrupt lines starting
+	  at ARC_CONNECT_IDU_IRQ_START (24). irq_enable() / irq_disable() then
+	  control the global IDU mask and interrupts may be distributed to any
+	  core.
+
+	  Disable this option on multi-core SoCs where peripheral interrupt
+	  lines are wired directly (replicated) to every core's private
+	  interrupt controller, or where the IDU has fewer inputs than the SoC
+	  has peripheral interrupts. When disabled, peripheral interrupts are
+	  serviced exclusively by the primary core (CPU 0):
+	  irq_enable() / irq_disable() program only the calling core's private
+	  interrupt controller and must be invoked on CPU 0 for interrupt
+	  lines >= 24. Secondary cores service only their core-private
+	  interrupts (timer, ICI). An IDU present in hardware is disabled and
+	  fully masked at boot.
+
 config ARC_STACK_CHECKING
 	bool
 	select NO_UNUSED_STACK_INSPECTION
