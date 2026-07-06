@@ -22,7 +22,7 @@
 
 #define DT_DRV_COMPAT snps_arcv2_intc
 
-#ifdef CONFIG_ARC_CONNECT
+#if defined(CONFIG_ARC_CONNECT_IDU)
 static void arc_shared_intc_init(void)
 {
 	/*
@@ -77,7 +77,44 @@ static int arc_shared_intc_update_post_smp(void)
 }
 
 SYS_INIT(arc_shared_intc_update_post_smp, SMP, 0);
-#endif /* CONFIG_ARC_CONNECT */
+
+#elif defined(CONFIG_ARC_CONNECT)
+/*
+ * The ARConnect IDU is not used for peripheral interrupt routing
+ * (CONFIG_ARC_CONNECT_IDU=n): peripheral interrupt lines are wired directly
+ * (replicated) to every core's private interrupt controller and are serviced
+ * by the primary core only. If the hardware includes an IDU, force it
+ * quiescent so that its outputs (which may mirror some of the direct per-core
+ * lines) can never assert and double-deliver an interrupt.
+ */
+static void arc_shared_intc_init(void)
+{
+	struct arc_connect_bcr bcr;
+
+	__ASSERT(z_arc_v2_core_id() == ARC_MP_PRIMARY_CPU_ID,
+		 "idu must be quiesced from primary core");
+
+	bcr.val = z_arc_v2_aux_reg_read(_ARC_V2_CONNECT_BCR);
+	if (bcr.idu) {
+		struct arc_connect_idu_bcr idu_bcr;
+		uint32_t nr_idu_irqs;
+
+		/* The IDU build register encodes the number of supported
+		 * common interrupts as an exponent: 4 * 2^CIRQNUM.
+		 */
+		idu_bcr.val = z_arc_v2_aux_reg_read(_ARC_V2_CONNECT_IDU_BCR);
+		nr_idu_irqs = 4U << idu_bcr.cirqnum;
+
+		z_arc_connect_idu_disable();
+
+		for (uint32_t i = 0; i < nr_idu_irqs; i++) {
+			z_arc_connect_idu_set_mask(i, 0x1);
+		}
+
+		/* The IDU is deliberately left disabled */
+	}
+}
+#endif /* CONFIG_ARC_CONNECT_IDU */
 
 
 /* lowest IRQ priority */
@@ -113,14 +150,18 @@ void arc_core_private_intc_init(void)
 	BUILD_ASSERT(CONFIG_GEN_IRQ_START_VECTOR == 16);
 
 	/*
-	 * System with IDU case (most likely multi-core system):
+	 * System with IDU used for peripheral interrupt routing (CONFIG_ARC_CONNECT_IDU=y,
+	 * most likely multi-core system):
 	 *  - disable private IRQs: they will be enabled with irq_enable before usage
 	 *  - enable shared (IDU) IRQs: their enabling / disabling is controlled via IDU, so we
 	 *    always pass them via core private interrupt controller.
-	 * System without IDU case (single-core system):
-	 *  - disable all IRQs: they will be enabled with irq_enable before usage
+	 * Other systems (single-core system, or multi-core with peripheral interrupt lines
+	 * replicated to every core's private interrupt controller, CONFIG_ARC_CONNECT_IDU=n):
+	 *  - disable all IRQs: they will be enabled with irq_enable before usage. As all
+	 *    device initialization runs on the primary core, peripheral interrupts get
+	 *    enabled - and are serviced - on the primary core only.
 	 */
-#ifdef CONFIG_ARC_CONNECT
+#ifdef CONFIG_ARC_CONNECT_IDU
 	for (uint32_t irq = CONFIG_GEN_IRQ_START_VECTOR; irq < ARC_CONNECT_IDU_IRQ_START; irq++) {
 		arc_core_intc_init_nolock(irq, _ARC_V2_INT_DISABLE);
 	}
@@ -132,7 +173,7 @@ void arc_core_private_intc_init(void)
 	for (uint32_t irq = CONFIG_GEN_IRQ_START_VECTOR; irq < CONFIG_NUM_IRQS; irq++) {
 		arc_core_intc_init_nolock(irq, _ARC_V2_INT_DISABLE);
 	}
-#endif /* CONFIG_ARC_CONNECT */
+#endif /* CONFIG_ARC_CONNECT_IDU */
 }
 
 static int arc_irq_init(const struct device *dev)
